@@ -1,0 +1,120 @@
+Google Takeout Metadata Fixer v6.2.3 - UI / Safety Audit
+==================================================================
+
+V6.2.3 CHANGE SCOPE
+-------------------
+v6.2.3 adds native Windows multi-folder selection to the regular Add folder(s)... chooser. The metadata engine, ExifTool command generation, verification behavior, multi-worker processing, GPS logic, and batch sequencing are unchanged from v6.2.1.
+
+The picker uses the Windows Vista+ IFileOpenDialog COM API with:
+  FOS_PICKFOLDERS
+  FOS_ALLOWMULTISELECT
+  FOS_FORCEFILESYSTEM
+  FOS_PATHMUSTEXIST
+
+This provides Explorer-style Ctrl-click and Shift-click folder selection without introducing a third-party dependency. Selected filesystem folders are returned as normal paths and passed through the existing Add-FolderPair deduplication and batch validation.
+
+COMPATIBILITY / FALLBACK
+------------------------
+The COM interop helper is compiled at runtime with Add-Type under Windows PowerShell. If the native picker cannot be created, the GUI reports the problem and falls back to the existing single-folder FolderBrowserDialog instead of preventing the application from running.
+
+The existing Add child folders... checked-list dialog remains available and unchanged.
+
+WINDOWS POWERSHELL HOTFIX
+--------------------------
+v6.2.3 retains the v6.2.1 fix for a runtime binder issue in the multi-folder path. A Generic.List[object] created through New-Object was converted with @($pairs), which can throw System.ArgumentException: "Argument types do not match" in Windows PowerShell. The GUI now calls List[object].ToArray() before returning validated folder pairs, and the batch coordinator uses ToArray() when publishing folder results. The start handler also explicitly captures validated pairs as an array. This change affects orchestration only; ExifTool metadata logic is unchanged.
+
+CHANGE SCOPE
+------------
+The compact/resizable-window work was introduced in v6.2 and remains unchanged here. v6.2.3 keeps the v6.1 parallel metadata engine, batch coordinator, and folder-pair behavior unchanged apart from the new multi-select input chooser.
+
+The important design choice is intentional:
+  multiple folders are processed sequentially;
+  files within the active folder are processed by the selected multi-worker pool.
+
+This avoids multiplying worker counts across several folders and reduces disk thrashing, memory pressure, log interleaving, and cancellation complexity.
+
+WINDOW / DPI UX
+---------------
+The v6.1 form used a fixed 980 x 950 client area, which could occupy nearly the full usable height of a 1080p desktop after borders/taskbar/DPI scaling. v6.2.3 now:
+  * targets a maximum 980 x 850 client area
+  * subtracts 140 pixels from the current primary-screen working height before choosing the initial height
+  * centers the form on screen
+  * uses a Sizable border and enables maximize/resize
+  * enables AutoScroll as a fallback for smaller/high-DPI displays
+  * reduces the folder grid from 205 to 165 pixels tall
+  * compacts vertical gaps while retaining all controls
+  * anchors major full-width controls so horizontal resizing is useful
+
+The lowest normal control ends near y=837, leaving a small internal bottom buffer at the normal 850-pixel client height while also leaving substantial desktop space above/below the centered window.
+
+MULTI-FOLDER UX
+---------------
+The GUI now provides a DataGridView with one row per independent mapping:
+  Input folder -> Output folder -> Status
+
+Inputs can be added several at once with Ctrl/Shift in the native Explorer-style Add folder(s)... picker, or several immediate child folders can be checked with Add child folders.... Outputs default to sibling "<input> - Fixed" paths and remain individually editable.
+
+BATCH VALIDATION
+----------------
+Before launching any work the GUI checks:
+  * at least one input is selected
+  * all inputs exist
+  * duplicate inputs are rejected
+  * recursively processed inputs cannot contain one another
+  * input/output overlap is rejected in both directions
+  * every output is checked against every input
+  * output/output overlap and duplicates are rejected
+  * existing non-empty outputs require explicit overwrite/re-run opt-in
+
+BATCH COORDINATOR
+-----------------
+Fix-GoogleTakeoutMetadata-v6.2.3-Batch.ps1 reads a temporary JSON manifest of input/output pairs and launches the normal v6.2.3 core once per folder.
+
+The selected WorkerCount is applied inside each folder. The coordinator waits for a folder to finish before starting the next one.
+
+Per-folder core progress is translated into overall batch progress. The GUI shows the current folder number/name and an aggregate percent.
+
+Each folder retains its independent CSV and summary. The coordinator also writes an aggregate batch summary.
+
+CANCELLATION
+------------
+One GUI cancellation file controls the whole batch. When cancellation is requested, the coordinator signals the currently running core's cancel file, waits for its active files to finish safely, and does not start the next folder.
+
+FAILURE ISOLATION
+-----------------
+A fatal error in one folder is recorded as FAILED for that folder and does not automatically discard successful earlier outputs. The coordinator can continue with remaining folder pairs. The GUI reports the number of folder failures at the end.
+
+A missing child final-progress record is treated as a folder failure even if the child process exit code is zero, avoiding a silent-success condition.
+
+SOURCE-TREE WRITES
+------------------
+In copy mode, the aggregate batch summary is placed inside the first successfully created output folder when possible. This avoids writing the aggregate batch report into the source Takeout tree. Dry-run reports necessarily have no fixed output and are written near the selected source as documented.
+
+PERFORMANCE
+-----------
+The batch coordinator deliberately does NOT run multiple folders concurrently. The existing v6 worker pool already supplies intra-folder parallelism with persistent ExifTool sessions.
+
+This architecture keeps the number of active ExifTool workers bounded by the configured worker count rather than:
+  worker count x folder count.
+
+STATIC AUDIT
+------------
+The following scripts were checked for balanced braces, brackets, parentheses, quotes, and block comments:
+  GoogleTakeoutMetadataFixer-GUI.ps1
+  Fix-GoogleTakeoutMetadata-v6.2.3-Batch.ps1
+  Fix-GoogleTakeoutMetadata-v6.2.3.ps1
+  Fix-GoogleTakeoutMetadata-v6.2.3-Worker.ps1
+
+The Windows GUI additionally invokes Microsoft's System.Management.Automation.Language.Parser against all three processing scripts before starting a job. Processing is blocked if the Windows PowerShell parser reports syntax errors.
+
+RUNTIME LIMITATION OF THIS BUILD ENVIRONMENT
+--------------------------------------------
+The authoring environment does not provide Windows PowerShell/WinForms, so the Windows GUI cannot be launched end-to-end here. The package therefore retains an on-machine PowerShell AST syntax self-check before work begins. The metadata engine itself is inherited from the tested v6/v5.1 path; v6.2.3 changes only GUI layout/version packaging and does not alter ExifTool write semantics or folder-processing behavior.
+
+v6.2.3 incident fix
+-------------------
+Observed v6.2.2 behavior: a 49-file folder assigned across four workers produced only one output
+file because workers 2-4 terminated without result files. Two-file folders succeeded because each
+worker received a single file. The multi-entry JSON worker manifest path was removed in v6.2.3.
+Workers now consume newline-delimited absolute file paths, and the orchestrator performs a hard
+post-run completeness check (attempted files must equal scanned media files).

@@ -1,0 +1,6 @@
+*-Fixed/
+metadata-fix-log*.csv
+metadata-fix-summary*.txt
+metadata-fix-batch-summary*.txt
+*.zip
+exiftool-*/
